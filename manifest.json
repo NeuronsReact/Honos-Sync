@@ -1,7 +1,7 @@
 {
 	"id": "honos-sync",
 	"name": "Honos Sync",
-	"version": "2.3.5",
+	"version": "2.3.6",
 	"minAppVersion": "0.15.0",
 	"description": "Sync your Obsidian vault with Honos-Core backend server",
 	"author": "NextRoad",

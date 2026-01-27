@@ -123,21 +123,27 @@ export default class SyncPlugin extends Plugin {
             return;
         }
 
-        if (this.isSyncing) return;
+        if (this.isSyncing) {
+            if (!silent) new Notice('Sync already in progress...');
+            console.log('Skipping sync: already isSyncing');
+            return;
+        }
+
         this.isSyncing = true;
         this.updateStatusBar('Syncing...', 'syncing');
+        if (!silent) new Notice('🚀 Starting Sync...', 2000);
 
         try {
-            if (!silent) new Notice('🔄 Starting sync...');
-
             // 1. Get remote state
+            // if (!silent) new Notice('Step 1: Fetching remote files...', 2000);
             const listRes = await this.networkClient.listFiles();
-            if (!listRes.success) throw new Error(listRes.error);
+            if (!listRes.success) throw new Error(`List files failed: ${listRes.error}`);
 
             const remoteFiles = listRes.files || [];
             const remoteMap = new Map(remoteFiles.map(f => [f.path, f]));
 
             // 2. Get local state
+            // if (!silent) new Notice('Step 2: Scanning local files...', 2000);
             const localFiles = this.app.vault.getFiles();
             const localMap = new Map(localFiles.map(f => [f.path, f]));
 
@@ -157,27 +163,35 @@ export default class SyncPlugin extends Plugin {
 
             // 4. Process Uploads (Local changes)
             for (const file of localFiles) {
-                const content = await this.app.vault.read(file);
-                const currentHash = await calculateHash(content);
-                const localMeta = this.metadataManager.getMetadata(file.path);
+                try {
+                    // console.log(`Checking ${file.path}`);
+                    const content = await this.app.vault.read(file);
+                    const currentHash = await calculateHash(content);
+                    const localMeta = this.metadataManager.getMetadata(file.path);
 
-                // If Hash changed compared to what we last synced
-                if (!localMeta || localMeta.hash !== currentHash) {
-                    const remote = remoteMap.get(file.path);
-                    if (remote && localMeta && remote.revision > localMeta.revision) {
-                        // Conflict or missed update: skip upload
-                        continue;
+                    // If Hash changed compared to what we last synced
+                    if (!localMeta || localMeta.hash !== currentHash) {
+                        const remote = remoteMap.get(file.path);
+                        if (remote && localMeta && remote.revision > localMeta.revision) {
+                            // Conflict or missed update: skip upload
+                            continue;
+                        }
+
+                        // if (!silent) new Notice(`Uploading ${file.path}...`, 1000);
+                        await this.processUpload(file, content, currentHash, localMeta?.revision || 0);
+                        processedCount++;
                     }
-
-                    await this.processUpload(file, content, currentHash, localMeta?.revision || 0);
-                    processedCount++;
+                } catch (fileErr) {
+                    console.error(`Error processing file ${file.path}:`, fileErr);
+                    // Continue to next file
                 }
             }
 
             await this.saveSettings();
 
-            if (!silent && processedCount > 0) {
-                new Notice(`✅ Sync complete. Processed ${processedCount} files.`);
+            if (!silent) {
+                if (processedCount > 0) new Notice(`✅ Sync complete. Processed ${processedCount} files.`);
+                else new Notice(`✅ Sync complete. No changes necessary.`);
             }
 
         } catch (err: any) {
@@ -186,6 +200,7 @@ export default class SyncPlugin extends Plugin {
             this.updateStatusBar('Error', 'error');
         } finally {
             this.isSyncing = false;
+            console.log('Sync finished, flag reset.');
             if (!this.statusBarItem.getText().includes('Error')) {
                 this.updateStatusBar('Idle', 'idle');
             }
