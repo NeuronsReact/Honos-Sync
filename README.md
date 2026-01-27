@@ -130,7 +130,9 @@ cp main.js manifest.json styles.css /path/to/vault/.obsidian/plugins/honos-sync/
 - XML (`.xml`)
 - YAML (`.yaml`, `.yml`)
 
-## 开发
+## 开发与发布
+
+### 本地开发
 
 ```bash
 # 安装依赖
@@ -145,6 +147,20 @@ npm run build
 # 类型检查
 npx tsc --noEmit
 ```
+
+### 发布新版本
+
+本仓库集成了 GitHub Actions，可以自动完成构建和发布：
+
+1. 修改 `package.json` 中的版本号
+2. 运行 `npm run version` (这会自动更新 `manifest.json` 并提交)
+3. 推送代码到 GitHub
+4. 在 GitHub 上创建一个新标签（Tag），格式为 `v*`（例如 `v1.0.1`）：
+   ```bash
+   git tag v1.0.1
+   git push origin v1.0.1
+   ```
+5. GitHub Actions 会自动触发构建，并创建一个包含编译后文件的 Release。BRAT 将会自动识别这些文件。
 
 ## 更新日志
 
