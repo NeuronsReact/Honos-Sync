@@ -128,55 +128,74 @@ export default class SyncPlugin extends Plugin {
     }
 
     async performSync(silent: boolean = false): Promise<void> {
+        console.log('[SYNC] performSync called, silent:', silent);
+
         if (!this.settings.token) {
+            console.log('[SYNC] No token, aborting');
             if (!silent) new Notice('Please configure API token.');
             return;
         }
 
         if (this.isSyncing) {
+            console.log('[SYNC] Already syncing, skipping');
             if (!silent) new Notice('Sync already in progress...');
-            console.log('Skipping sync: already isSyncing');
             return;
         }
 
+        console.log('[SYNC] Starting sync process');
         this.isSyncing = true;
         this.updateStatusBar('Syncing...', 'syncing');
         if (!silent) new Notice(`🚀 Starting Sync to ${SERVER_URL}...`, 2000);
 
         try {
             // 1. Get remote state
-            // if (!silent) new Notice('Step 1: Fetching remote files...', 2000);
+            console.log('[SYNC] Step 1: Calling networkClient.listFiles()...');
             const listRes = await this.networkClient.listFiles();
+            console.log('[SYNC] Step 1 complete. Success:', listRes.success);
+
             if (!listRes.success) throw new Error(`List files failed: ${listRes.error}`);
 
             const remoteFiles = listRes.files || [];
             const remoteMap = new Map(remoteFiles.map(f => [f.path, f]));
+            console.log(`[SYNC] Remote has ${remoteFiles.length} files`);
 
             // 2. Get local state
-            // if (!silent) new Notice('Step 2: Scanning local files...', 2000);
+            console.log('[SYNC] Step 2: Getting local files...');
             const localFiles = this.app.vault.getFiles();
             const localMap = new Map(localFiles.map(f => [f.path, f]));
+            console.log(`[SYNC] Local has ${localFiles.length} files`);
 
             let processedCount = 0;
 
             // 3. Process Downloads (Remote is newer)
+            console.log('[SYNC] Step 3: Processing downloads...');
             for (const remote of remoteFiles) {
                 const localMeta = this.metadataManager.getMetadata(remote.path);
                 const localFile = localMap.get(remote.path);
 
                 // If remote revision > local known revision
                 if (!localMeta || remote.revision > localMeta.revision) {
+                    console.log(`[SYNC] Downloading: ${remote.path}`);
                     await this.processDownload(remote, localFile);
                     processedCount++;
                 }
             }
+            console.log(`[SYNC] Downloads complete. Processed ${processedCount}`);
 
             // 4. Process Uploads (Local changes)
+            console.log('[SYNC] Step 4: Processing uploads...');
             for (const file of localFiles) {
                 try {
-                    // console.log(`Checking ${file.path}`);
+                    console.log(`[SYNC] Checking file: ${file.path}`);
+
+                    console.log(`[SYNC]   Reading file content...`);
                     const content = await this.app.vault.read(file);
+                    console.log(`[SYNC]   Content read. Size: ${content.length}`);
+
+                    console.log(`[SYNC]   Calculating hash...`);
                     const currentHash = await calculateHash(content);
+                    console.log(`[SYNC]   Hash calculated: ${currentHash.substring(0, 8)}...`);
+
                     const localMeta = this.metadataManager.getMetadata(file.path);
 
                     // If Hash changed compared to what we last synced
@@ -184,36 +203,46 @@ export default class SyncPlugin extends Plugin {
                         const remote = remoteMap.get(file.path);
                         if (remote && localMeta && remote.revision > localMeta.revision) {
                             // Conflict or missed update: skip upload
+                            console.log(`[SYNC]   Skipping (remote is newer)`);
                             continue;
                         }
 
                         // if (!silent) new Notice(`Uploading ${file.path}...`, 1000);
+                        console.log(`[SYNC]   Uploading...`);
                         await this.processUpload(file, content, currentHash, localMeta?.revision || 0);
                         processedCount++;
+                    } else {
+                        console.log(`[SYNC]   No changes`);
                     }
                 } catch (fileErr) {
-                    console.error(`Error processing file ${file.path}:`, fileErr);
+                    console.error(`[SYNC] Error processing file ${file.path}:`, fileErr);
                     // Continue to next file
                 }
             }
+            console.log(`[SYNC] Uploads complete`);
 
+            console.log('[SYNC] Saving settings...');
             await this.saveSettings();
+            console.log('[SYNC] Settings saved');
 
             if (!silent) {
                 if (processedCount > 0) new Notice(`✅ Sync complete. Processed ${processedCount} files.`);
                 else new Notice(`✅ Sync complete. No changes necessary.`);
             }
+            console.log('[SYNC] Sync completed successfully');
 
         } catch (err: any) {
-            console.error('Sync error:', err);
+            console.error('[SYNC] Sync error:', err);
             if (!silent) new Notice(`❌ Sync failed: ${err.message}`);
             this.updateStatusBar('Error', 'error');
         } finally {
+            console.log('[SYNC] Finally block: resetting isSyncing flag');
             this.isSyncing = false;
-            console.log('Sync finished, flag reset.');
+            // console.log('Sync finished, flag reset.'); // Original line, replaced by the above
             if (!this.statusBarItem.getText().includes('Error')) {
                 this.updateStatusBar('Idle', 'idle');
             }
+            console.log('[SYNC] Sync cleanup complete');
         }
     }
 
