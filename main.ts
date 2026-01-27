@@ -189,6 +189,10 @@ export default class SyncPlugin extends Plugin {
             console.log('[SYNC] Step 2: Getting local files...');
             const localFiles = this.app.vault.getFiles();
             const localMap = new Map(localFiles.map(f => [f.path, f]));
+
+            // Track files processed in this sync cycle to prevent false deletion detection
+            const processedPaths = new Set<string>();
+
             console.log(`[SYNC] Local has ${localFiles.length} files`);
 
             let processedCount = 0;
@@ -203,6 +207,7 @@ export default class SyncPlugin extends Plugin {
                 if (!localMeta || remote.revision > localMeta.revision) {
                     console.log(`[SYNC] Downloading: ${remote.path}`);
                     await this.processDownload(remote, localFile);
+                    processedPaths.add(remote.path);
                     processedCount++;
                 }
             }
@@ -212,6 +217,10 @@ export default class SyncPlugin extends Plugin {
             console.log('[SYNC] Step 3.5: Processing local deletes...');
             const allMetaPaths = Object.keys(this.metadataManager.getAllMetadata());
             for (const path of allMetaPaths) {
+                // CRITICAL FIX: If we just downloaded/processed this file, DO NOT treat it as a local deletion
+                // even if it's missing from the initial 'localMap' snapshot.
+                if (processedPaths.has(path)) continue;
+
                 if (!localMap.has(path)) {
                     const meta = this.metadataManager.getMetadata(path);
                     // If meta.hash is empty, it's already marked deleted/tombstone
