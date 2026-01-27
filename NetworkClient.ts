@@ -181,6 +181,35 @@ export class NetworkClient {
     }
 
     /**
+     * Attempt auto-merge for conflicted file
+     * POST /obsidian/v2/conflicts/auto-merge
+     */
+    async attemptAutoMerge(params: {
+        filePath: string;
+        ourContent: string;
+        ancestorRevision: number;
+        theirRevision: number;
+    }): Promise<any> {
+        try {
+            const response = await requestUrl({
+                url: `${this.baseUrl}/obsidian/v2/conflicts/auto-merge`,
+                method: 'POST',
+                headers: this.getAuthHeaders(),
+                body: JSON.stringify(params),
+            });
+
+            if (response.status === 200) {
+                return response.json;
+            } else {
+                return { success: false, error: 'Auto-merge failed server-side' };
+            }
+        } catch (error) {
+            console.error('Error attempting auto-merge:', error);
+            return { success: false, error: 'Auto-merge network error' };
+        }
+    }
+
+    /**
      * Get legacy sync status
      */
     async getSyncStatus(): Promise<SyncStatusResponse> {
