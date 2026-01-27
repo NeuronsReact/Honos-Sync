@@ -172,7 +172,8 @@ export class NetworkClient {
             });
 
             if (response.status === 200) {
-                return { success: true, user: response.json };
+                const data = response.json;
+                return { success: true, user: data.user };
             }
             return { success: false, error: 'Token invalid' };
         } catch (e: any) {

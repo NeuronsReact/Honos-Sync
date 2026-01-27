@@ -1,6 +1,6 @@
 {
     "name": "obsidian-sync-client",
-    "version": "2.3.4",
+    "version": "2.3.5",
     "description": "Custom sync client for Obsidian with SMTP authentication",
     "main": "main.js",
     "scripts": {
