@@ -179,7 +179,7 @@ export default class SyncPlugin extends Plugin {
     }
 
     /**
-     * Perform a full vault sync
+     * Perform a full vault sync (bidirectional)
      * @param silent - If true, don't show notices for success
      */
     async performSync(silent: boolean = false): Promise<void> {
@@ -198,23 +198,45 @@ export default class SyncPlugin extends Plugin {
 
         try {
             if (!silent) {
-                new Notice('🔄 Starting sync...');
+                new Notice('🔄 Starting bidirectional sync...');
             }
 
-            // Get all files in the vault (markdown and other common files)
-            const files = this.app.vault.getFiles().filter(file => {
-                // Sync markdown and common text-based files
+            // Step 1: Get remote files from server
+            const remoteFilesResult = await this.networkClient.listFiles();
+            if (!remoteFilesResult.success) {
+                throw new Error(`Failed to get remote files: ${remoteFilesResult.error}`);
+            }
+
+            const remoteFiles = remoteFilesResult.files || [];
+            const remoteFilePaths = new Set(remoteFiles.map(f => f.path));
+
+            // Step 2: Get local files
+            const localFiles = this.app.vault.getFiles().filter(file => {
                 const ext = file.extension.toLowerCase();
                 return ['md', 'txt', 'json', 'css', 'js', 'html', 'xml', 'yaml', 'yml'].includes(ext);
             });
+            const localFilePaths = new Set(localFiles.map(f => f.path));
 
+            let downloadedCount = 0;
             let uploadedCount = 0;
             let failedCount = 0;
-            let skippedCount = 0;
 
-            for (const file of files) {
+            // Step 3: Download files that exist on server but not locally
+            for (const remoteFile of remoteFiles) {
+                if (!localFilePaths.has(remoteFile.path)) {
+                    console.log(`Downloading new file from server: ${remoteFile.path}`);
+                    const success = await this.downloadFile(remoteFile.path);
+                    if (success) {
+                        downloadedCount++;
+                    } else {
+                        failedCount++;
+                    }
+                }
+            }
+
+            // Step 4: Upload local files to server
+            for (const file of localFiles) {
                 try {
-                    // Read file content as text
                     const content = await this.app.vault.read(file);
                     const result = await this.networkClient.uploadFile(file.path, content);
 
@@ -224,7 +246,7 @@ export default class SyncPlugin extends Plugin {
                         failedCount++;
                         console.error(`Failed to upload ${file.path}: ${result.error}`);
 
-                        // Handle specific error cases
+                        // Handle authentication errors
                         if (result.error?.includes('Unauthorized') || result.error?.includes('Invalid')) {
                             new Notice('❌ Authentication failed. Please check your API token.');
                             this.isSyncing = false;
@@ -238,23 +260,32 @@ export default class SyncPlugin extends Plugin {
                 }
             }
 
+            // Show summary
             if (!silent || failedCount > 0) {
+                const parts = [];
+                if (downloadedCount > 0) parts.push(`${downloadedCount} downloaded`);
+                if (uploadedCount > 0) parts.push(`${uploadedCount} uploaded`);
+                if (failedCount > 0) parts.push(`${failedCount} failed`);
+
+                const summary = parts.join(', ');
+
                 if (failedCount > 0) {
-                    new Notice(`⚠️ Sync completed: ${uploadedCount} uploaded, ${failedCount} failed`);
+                    new Notice(`⚠️ Sync completed: ${summary}`);
+                } else if (downloadedCount === 0 && uploadedCount === 0) {
+                    new Notice(`✅ Sync completed: Already up to date`);
                 } else {
-                    new Notice(`✅ Sync completed: ${uploadedCount} files uploaded successfully!`);
+                    new Notice(`✅ Sync completed: ${summary}`);
                 }
             }
         } catch (error) {
             console.error('Sync error:', error);
-            new Notice('❌ Sync failed. Please check your connection.');
+            new Notice(`❌ Sync failed: ${error.message || 'Please check your connection.'}`);
             this.updateStatusBar('Sync Failed', 'error');
         } finally {
             this.isSyncing = false;
-            // If it wasn't an error, set to idle (or we could show "Synced" for a bit?)
             if (!this.statusBarItem.getText().includes('Failed')) {
                 this.updateStatusBar('Synced', 'idle');
-                setTimeout(() => this.updateStatusBar('Idle', 'idle'), 3000); // Revert to Idle after 3s
+                setTimeout(() => this.updateStatusBar('Idle', 'idle'), 3000);
             }
         }
     }
