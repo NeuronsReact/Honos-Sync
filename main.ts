@@ -18,6 +18,7 @@ export default class SyncPlugin extends Plugin {
     wsClient: WebSocketClient | null = null;
     private syncIntervalId: number | null = null;
     private isSyncing: boolean = false;
+    private wsConnected: boolean = false;
     private statusBarItem: HTMLElement;
 
     // Debounced sync for file changes
@@ -86,6 +87,7 @@ export default class SyncPlugin extends Plugin {
         if (this.settings.token) {
             this.wsClient = new WebSocketClient(this.settings.token);
             this.wsClient.onStatusChange((connected) => {
+                this.wsConnected = connected;
                 this.updateStatusBar(connected ? 'Connected' : 'Disconnected', connected ? 'idle' : 'error');
             });
             this.wsClient.onFileChange(async (event) => {
@@ -331,12 +333,27 @@ export default class SyncPlugin extends Plugin {
         return `${base}.conflict-${Date.now()}.${ext}`;
     }
 
+
+
     updateStatusBar(text: string, state: 'idle' | 'syncing' | 'error') {
-        this.statusBarItem.setText(`Honos: ${text}`);
+        let indicator = '🔴'; // Default disconnected
+
+        if (this.wsConnected) {
+            indicator = '🟢';
+        }
+
+        if (state === 'syncing') {
+            indicator = '🔄';
+        }
+
+        this.statusBarItem.setText(`Honos ${indicator}`);
+        this.statusBarItem.setAttr('title', `Honos Sync: ${text}`); // Tooltip shows detail
+
         if (state === 'error') {
             this.statusBarItem.addClass('mod-error');
         } else {
             this.statusBarItem.removeClass('mod-error');
+            // Remove text color modification classes if any
         }
     }
 }
