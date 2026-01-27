@@ -1,6 +1,8 @@
 import { Plugin, Notice, TFile } from 'obsidian';
 import { SyncPluginSettingTab } from './SettingsTab';
 import { NetworkClient } from './NetworkClient';
+import { MetadataManager } from './MetadataManager';
+import { SyncManager } from './SyncManager';
 import { SyncPluginSettings, DEFAULT_SETTINGS, RemoteFile, SERVER_URL } from './types';
 
 /**
@@ -11,8 +13,10 @@ import { SyncPluginSettings, DEFAULT_SETTINGS, RemoteFile, SERVER_URL } from './
 export default class SyncPlugin extends Plugin {
     settings: SyncPluginSettings;
     networkClient: NetworkClient;
+    metadataManager: MetadataManager;
+    syncManager: SyncManager;
+
     private syncIntervalId: number | null = null;
-    private isSyncing: boolean = false;
     private statusBarItem: HTMLElement;
 
     async onload() {
@@ -21,11 +25,28 @@ export default class SyncPlugin extends Plugin {
         // Load settings
         await this.loadSettings();
 
-        // Initialize network client
+        // Ensure device ID exists
+        if (!this.settings.deviceId) {
+            this.settings.deviceId = `device-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            await this.saveSettings();
+        }
+
+        // Initialize components
+        this.metadataManager = new MetadataManager(this);
+        await this.metadataManager.load();
+
         this.networkClient = new NetworkClient(
             SERVER_URL,
             this.settings.token,
             this.settings.deviceName
+        );
+        this.networkClient.setUseLegacySync(this.settings.useLegacySync);
+
+        this.syncManager = new SyncManager(
+            this.app,
+            this.networkClient,
+            this.metadataManager,
+            () => this.settings
         );
 
         // Add settings tab
@@ -33,10 +54,6 @@ export default class SyncPlugin extends Plugin {
 
         // Add ribbon icon for quick sync
         this.addRibbonIcon('sync', 'Sync with Honos', async () => {
-            if (!this.settings.token) {
-                new Notice('Please configure your API token in settings first');
-                return;
-            }
             await this.performSync();
         });
 
@@ -45,22 +62,7 @@ export default class SyncPlugin extends Plugin {
             id: 'sync-vault',
             name: 'Sync vault now',
             callback: async () => {
-                if (!this.settings.token) {
-                    new Notice('Please configure your API token in settings first');
-                    return;
-                }
                 await this.performSync();
-            }
-        });
-
-        this.addCommand({
-            id: 'open-sync-settings',
-            name: 'Open sync settings',
-            callback: () => {
-                // @ts-ignore - accessing private API
-                this.app.setting.open();
-                // @ts-ignore - accessing private API
-                this.app.setting.openTabById(this.manifest.id);
             }
         });
 
@@ -81,12 +83,39 @@ export default class SyncPlugin extends Plugin {
             this.startAutoSync();
         }
 
-        // Monitor file changes (for future real-time sync feature)
+        // Monitor file changes
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (this.settings.token && file instanceof TFile) {
-                    console.log(`File modified: ${file.path}`);
-                    // TODO: Implement debounced auto-sync on file change
+                    // Start debounced sync or just log for now?
+                    // For immediate consistency, we could trigger upload.
+                    // But usually better to let auto-sync or manual sync handle it to avoid spam.
+                    // However, for single file edit, we might want to push it.
+                    // Let's stick to user request: "Modify file upload logic" (in SyncManager).
+                    // We won't auto-upload heavily here unless autoSync is better implemented.
+                    // But if we want to ensure revision control is granular,
+                    // we might want to upload on save.
+                    // For now, I'll log and let manual/interval sync handle it, or maybe trigger uploadFile?
+                    // Given the complexity of conflicts, safer to let syncManager handle batch sync or interval.
+                    // But `SyncManager.uploadFile` handles conflicts.
+                }
+            })
+        );
+
+        // Handle Rename
+        this.registerEvent(
+            this.app.vault.on('rename', async (file, oldPath) => {
+                if (this.settings.token && file instanceof TFile) {
+                    console.log(`File renamed: ${oldPath} -> ${file.path}`);
+
+                    // 1. Delete old path on server
+                    await this.syncManager.deleteFile(oldPath);
+
+                    // 2. Upload new path
+                    await this.syncManager.uploadFile(file);
+
+                    // 3. Update local metadata
+                    await this.metadataManager.renameMetadata(oldPath, file.path);
                 }
             })
         );
@@ -95,16 +124,7 @@ export default class SyncPlugin extends Plugin {
             this.app.vault.on('delete', async (file) => {
                 if (this.settings.token && file instanceof TFile) {
                     console.log(`File deleted: ${file.path}`);
-                    // TODO: Implement sync on file delete
-                }
-            })
-        );
-
-        this.registerEvent(
-            this.app.vault.on('rename', async (file, oldPath) => {
-                if (this.settings.token && file instanceof TFile) {
-                    console.log(`File renamed: ${oldPath} → ${file.path}`);
-                    // TODO: Implement sync on file rename
+                    await this.syncManager.deleteFile(file.path);
                 }
             })
         );
@@ -135,9 +155,11 @@ export default class SyncPlugin extends Plugin {
 
         const intervalMs = this.settings.syncInterval * 60 * 1000;
         this.syncIntervalId = window.setInterval(async () => {
-            if (this.settings.token && !this.isSyncing) {
+            if (this.settings.token) {
                 console.log('Auto-sync triggered');
-                await this.performSync(true); // Silent sync
+                this.updateStatusBar('Syncing', 'syncing');
+                await this.syncManager.syncVault(true); // Silent sync
+                this.updateStatusBar('Idle', 'idle');
             }
         }, intervalMs);
 
@@ -179,279 +201,20 @@ export default class SyncPlugin extends Plugin {
     }
 
     /**
-     * Perform a full vault sync (bidirectional with timestamp-based conflict resolution)
-     * @param silent - If true, don't show notices for success
+     * Perform a full vault sync
      */
-    async performSync(silent: boolean = false): Promise<void> {
-        if (!this.settings.token) {
-            new Notice('Not authenticated. Please configure your API token.');
-            return;
-        }
-
-        if (this.isSyncing) {
-            new Notice('Sync already in progress...');
-            return;
-        }
-
-        this.isSyncing = true;
+    async performSync(): Promise<void> {
         this.updateStatusBar('Syncing...', 'syncing');
-
-        try {
-            if (!silent) {
-                new Notice('🔄 Starting bidirectional sync...');
-            }
-
-            // Step 1: Get remote files from server
-            const remoteFilesResult = await this.networkClient.listFiles();
-            if (!remoteFilesResult.success) {
-                throw new Error(`Failed to get remote files: ${remoteFilesResult.error}`);
-            }
-
-            const remoteFiles = remoteFilesResult.files || [];
-            const remoteFileMap = new Map<string, RemoteFile>();
-            remoteFiles.forEach(f => remoteFileMap.set(f.path, f));
-
-            // Step 2: Get local files
-            const localFiles = this.app.vault.getFiles().filter(file => {
-                const ext = file.extension.toLowerCase();
-                return ['md', 'txt', 'json', 'css', 'js', 'html', 'xml', 'yaml', 'yml'].includes(ext);
-            });
-
-            let downloadedCount = 0;
-            let uploadedCount = 0;
-            let failedCount = 0;
-            let skippedCount = 0;
-
-            // Step 3: Process each local file
-            for (const localFile of localFiles) {
-                try {
-                    const remoteFile = remoteFileMap.get(localFile.path);
-
-                    if (!remoteFile) {
-                        // File only exists locally - upload it
-                        console.log(`Uploading new file to server: ${localFile.path}`);
-                        const content = await this.app.vault.read(localFile);
-                        const result = await this.networkClient.uploadFile(localFile.path, content);
-
-                        if (result.success) {
-                            uploadedCount++;
-                        } else {
-                            failedCount++;
-                            console.error(`Failed to upload ${localFile.path}: ${result.error}`);
-
-                            // Handle authentication errors
-                            if (result.error?.includes('Unauthorized') || result.error?.includes('Invalid')) {
-                                new Notice('❌ Authentication failed. Please check your API token.');
-                                this.isSyncing = false;
-                                this.updateStatusBar('Auth Failed', 'error');
-                                return;
-                            }
-                        }
-                    } else {
-                        // File exists both locally and remotely - compare timestamps
-                        const localMtime = localFile.stat.mtime;
-                        const remoteMtime = new Date(remoteFile.updatedAt).getTime();
-
-                        if (localMtime > remoteMtime) {
-                            // Local file is newer - upload it
-                            console.log(`Uploading updated file (local newer): ${localFile.path}`);
-                            const content = await this.app.vault.read(localFile);
-                            const result = await this.networkClient.uploadFile(localFile.path, content);
-
-                            if (result.success) {
-                                uploadedCount++;
-                            } else {
-                                failedCount++;
-                                console.error(`Failed to upload ${localFile.path}: ${result.error}`);
-                            }
-                        } else if (remoteMtime > localMtime) {
-                            // Remote file is newer - download it
-                            console.log(`Downloading updated file (remote newer): ${localFile.path}`);
-                            const success = await this.downloadFile(localFile.path);
-
-                            if (success) {
-                                downloadedCount++;
-                            } else {
-                                failedCount++;
-                            }
-                        } else {
-                            // Files are the same - skip
-                            skippedCount++;
-                        }
-
-                        // Remove from map to track processed files
-                        remoteFileMap.delete(localFile.path);
-                    }
-                } catch (error) {
-                    failedCount++;
-                    console.error(`Error processing ${localFile.path}:`, error);
-                }
-            }
-
-            // Step 4: Download files that only exist on server
-            for (const [path, remoteFile] of remoteFileMap) {
-                console.log(`Downloading new file from server: ${path}`);
-                const success = await this.downloadFile(path);
-
-                if (success) {
-                    downloadedCount++;
-                } else {
-                    failedCount++;
-                }
-            }
-
-            // Show summary
-            if (!silent || failedCount > 0) {
-                const parts = [];
-                if (downloadedCount > 0) parts.push(`${downloadedCount} downloaded`);
-                if (uploadedCount > 0) parts.push(`${uploadedCount} uploaded`);
-                if (skippedCount > 0) parts.push(`${skippedCount} unchanged`);
-                if (failedCount > 0) parts.push(`${failedCount} failed`);
-
-                const summary = parts.join(', ');
-
-                if (failedCount > 0) {
-                    new Notice(`⚠️ Sync completed: ${summary}`);
-                } else if (downloadedCount === 0 && uploadedCount === 0) {
-                    new Notice(`✅ Sync completed: Already up to date`);
-                } else {
-                    new Notice(`✅ Sync completed: ${summary}`);
-                }
-            }
-        } catch (error) {
-            console.error('Sync error:', error);
-            new Notice(`❌ Sync failed: ${error.message || 'Please check your connection.'}`);
-            this.updateStatusBar('Sync Failed', 'error');
-        } finally {
-            this.isSyncing = false;
-            if (!this.statusBarItem.getText().includes('Failed')) {
-                this.updateStatusBar('Synced', 'idle');
-                setTimeout(() => this.updateStatusBar('Idle', 'idle'), 3000);
-            }
-        }
-    }
-
-    /**
-     * Upload a single file to the server
-     */
-    async uploadFile(file: TFile): Promise<boolean> {
-        if (!this.settings.token) {
-            return false;
-        }
-
-        try {
-            const content = await this.app.vault.read(file);
-            const result = await this.networkClient.uploadFile(file.path, content);
-
-            if (!result.success) {
-                console.error(`Failed to upload ${file.path}: ${result.error}`);
-            }
-
-            return result.success;
-        } catch (error) {
-            console.error(`Error uploading ${file.path}:`, error);
-            return false;
-        }
-    }
-
-    /**
-     * Download a single file from the server
-     */
-    async downloadFile(filePath: string): Promise<boolean> {
-        if (!this.settings.token) {
-            return false;
-        }
-
-        try {
-            const result = await this.networkClient.downloadFile(filePath);
-
-            if (result.success && result.content !== undefined) {
-                // Check if file exists
-                const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-
-                if (existingFile instanceof TFile) {
-                    await this.app.vault.modify(existingFile, result.content);
-                } else {
-                    // Create parent folders if needed
-                    const folder = filePath.substring(0, filePath.lastIndexOf('/'));
-                    if (folder) {
-                        await this.app.vault.createFolder(folder).catch(() => { });
-                    }
-                    await this.app.vault.create(filePath, result.content);
-                }
-
-                return true;
-            }
-
-            return false;
-        } catch (error) {
-            console.error(`Error downloading ${filePath}:`, error);
-            return false;
-        }
-    }
-
-    /**
-     * Delete a file from the server
-     */
-    async deleteRemoteFile(filePath: string): Promise<boolean> {
-        if (!this.settings.token) {
-            return false;
-        }
-
-        try {
-            const result = await this.networkClient.deleteFile(filePath);
-            return result.success;
-        } catch (error) {
-            console.error(`Error deleting ${filePath}:`, error);
-            return false;
-        }
-    }
-
-    /**
-     * Get list of remote files
-     */
-    async getRemoteFiles(): Promise<RemoteFile[] | null> {
-        if (!this.settings.token) {
-            return null;
-        }
-
-        try {
-            const result = await this.networkClient.listFiles();
-            if (result.success) {
-                return result.files || [];
-            }
-            return null;
-        } catch (error) {
-            console.error('Error getting remote files:', error);
-            return null;
-        }
+        await this.syncManager.syncVault(false);
+        this.updateStatusBar('Idle', 'idle');
     }
 
     /**
      * Update the status bar text and icon
      */
     updateStatusBar(text: string, state: 'idle' | 'syncing' | 'error' = 'idle') {
-        let icon = 'sync';
-
-        switch (state) {
-            case 'syncing':
-                icon = 'refresh-cw';
-                break;
-            case 'error':
-                icon = 'alert-triangle';
-                break;
-            case 'idle':
-            default:
-                icon = 'check-circle'; // Or cloud
-                break;
-        }
-
-        // Simple text update for now, can be enhanced with icons if needed
-        // Using standard text updates. To add actual icons we need verify standard obsidian icons or use setIcon
-
         this.statusBarItem.empty();
 
-        // Add minimal styling
         if (state === 'syncing') {
             this.statusBarItem.addClass('sync-plugin-status-syncing');
         } else {

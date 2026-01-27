@@ -19,6 +19,7 @@ export class NetworkClient {
     private baseUrl: string;
     private token: string;
     private deviceName: string;
+    private useLegacySync: boolean = false;
 
     constructor(baseUrl: string, token: string = '', deviceName: string = '') {
         this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
@@ -33,13 +34,33 @@ export class NetworkClient {
         this.token = token;
     }
 
-
-
     /**
      * Update the device name
      */
     setDeviceName(deviceName: string): void {
         this.deviceName = deviceName;
+    }
+
+    /**
+     * Set sync mode
+     */
+    setUseLegacySync(useLegacy: boolean): void {
+        this.useLegacySync = useLegacy;
+    }
+
+    /**
+     * Get API base path based on sync mode
+     */
+    private getApiBase(endpoint: string): string {
+        // Auth and Status are always on root /obsidian or sharedv1
+        if (endpoint === 'auth' || endpoint === 'status') {
+            return `${this.baseUrl}/obsidian`;
+        }
+
+        // File operations depend on version
+        return this.useLegacySync
+            ? `${this.baseUrl}/obsidian`
+            : `${this.baseUrl}/obsidian/v2`;
     }
 
     /**
@@ -91,8 +112,9 @@ export class NetworkClient {
      */
     async listFiles(): Promise<FileListResponse> {
         try {
+            const apiBase = this.getApiBase('files');
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/files`,
+                url: `${apiBase}/files`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
@@ -121,11 +143,18 @@ export class NetworkClient {
      * Download a file
      * GET /obsidian/files/{path}
      */
-    async downloadFile(filePath: string): Promise<FileDownloadResponse> {
+    async downloadFile(filePath: string, revision?: number): Promise<FileDownloadResponse> {
         try {
+            const apiBase = this.getApiBase('files');
             const encodedPath = encodeURIComponent(filePath);
+            let url = `${apiBase}/files/${encodedPath}`;
+
+            if (revision !== undefined && !this.useLegacySync) {
+                url += `?revision=${revision}`;
+            }
+
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/files/${encodedPath}`,
+                url: url,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
@@ -136,6 +165,7 @@ export class NetworkClient {
                     success: true,
                     file: data.file,
                     content: data.content,
+                    isConflict: data.isConflict,
                 };
             } else {
                 return this.handleErrorResponse(response);
@@ -153,7 +183,11 @@ export class NetworkClient {
      * Upload or update a file
      * POST /obsidian/upload
      */
-    async uploadFile(filePath: string, content: ArrayBuffer | string): Promise<FileUploadResponse> {
+    async uploadFile(
+        filePath: string,
+        content: ArrayBuffer | string,
+        options: { parentRevision?: number, deviceId?: string } = {}
+    ): Promise<FileUploadResponse> {
         try {
             // Convert ArrayBuffer to string if needed
             let contentString: string;
@@ -163,14 +197,23 @@ export class NetworkClient {
                 contentString = content;
             }
 
+            const apiBase = this.getApiBase('files');
+            const body: any = {
+                path: filePath,
+                content: contentString,
+            };
+
+            if (!this.useLegacySync) {
+                if (options.parentRevision !== undefined) body.parentRevision = options.parentRevision;
+                if (options.deviceId) body.deviceId = options.deviceId;
+            }
+
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/upload`,
+                url: `${apiBase}/upload`,
                 method: 'POST',
                 headers: this.getAuthHeaders(),
-                body: JSON.stringify({
-                    path: filePath,
-                    content: contentString,
-                }),
+                body: JSON.stringify(body),
+                throw: false // Handle 409 manualy
             });
 
             if (response.status === 200 || response.status === 201) {
@@ -179,6 +222,13 @@ export class NetworkClient {
                     success: true,
                     message: data.message || 'File uploaded successfully',
                     file: data.file,
+                };
+            } else if (response.status === 409) {
+                const data = response.json;
+                return {
+                    success: false,
+                    error: 'Conflict detected',
+                    conflict: data.conflict,
                 };
             } else {
                 return this.handleErrorResponse(response);
@@ -196,14 +246,29 @@ export class NetworkClient {
      * Delete a file
      * DELETE /obsidian/files/{path}
      */
-    async deleteFile(filePath: string): Promise<FileDeleteResponse> {
+    async deleteFile(
+        filePath: string,
+        options: { parentRevision?: number, deviceId?: string } = {}
+    ): Promise<FileDeleteResponse> {
         try {
+            const apiBase = this.getApiBase('files');
             const encodedPath = encodeURIComponent(filePath);
-            const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/files/${encodedPath}`,
+
+            const reqOptions: any = {
+                url: `${apiBase}/files/${encodedPath}`,
                 method: 'DELETE',
                 headers: this.getAuthHeaders(),
-            });
+                throw: false
+            };
+
+            if (!this.useLegacySync) {
+                reqOptions.body = JSON.stringify({
+                    parentRevision: options.parentRevision,
+                    deviceId: options.deviceId
+                });
+            }
+
+            const response = await requestUrl(reqOptions);
 
             if (response.status === 200) {
                 const data = response.json;
@@ -211,6 +276,13 @@ export class NetworkClient {
                     success: true,
                     message: data.message || 'File deleted successfully',
                     deletedFile: data.deletedFile,
+                };
+            } else if (response.status === 409) {
+                const data = response.json;
+                return {
+                    success: false,
+                    error: 'Conflict detected during deletion',
+                    conflict: data.conflict
                 };
             } else {
                 return this.handleErrorResponse(response);
@@ -221,6 +293,35 @@ export class NetworkClient {
                 success: false,
                 error: error?.message || 'Failed to delete file.',
             };
+        }
+    }
+
+    /**
+     * Attempt auto-merge for conflicted file
+     * POST /obsidian/v2/conflicts/auto-merge
+     */
+    async attemptAutoMerge(params: {
+        filePath: string;
+        ourContent: string;
+        ancestorRevision: number;
+        theirRevision: number;
+    }): Promise<any> {
+        try {
+            const response = await requestUrl({
+                url: `${this.baseUrl}/obsidian/v2/conflicts/auto-merge`,
+                method: 'POST',
+                headers: this.getAuthHeaders(),
+                body: JSON.stringify(params),
+            });
+
+            if (response.status === 200) {
+                return response.json;
+            } else {
+                return { success: false, error: 'Auto-merge failed server-side' };
+            }
+        } catch (error) {
+            console.error('Error attempting auto-merge:', error);
+            return { success: false, error: 'Auto-merge network error' };
         }
     }
 

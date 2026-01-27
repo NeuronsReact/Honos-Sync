@@ -6,6 +6,8 @@ export interface SyncPluginSettings {
     deviceName: string;
     autoSync: boolean;
     syncInterval: number; // in minutes
+    deviceId: string;
+    useLegacySync: boolean;
 }
 
 /**
@@ -16,6 +18,8 @@ export const DEFAULT_SETTINGS: SyncPluginSettings = {
     deviceName: 'Obsidian Device',
     autoSync: false,
     syncInterval: 5,
+    deviceId: '', // Will be generated on load if empty
+    useLegacySync: false,
 };
 
 export const SERVER_URL = 'https://api.honos.dev';
@@ -48,6 +52,7 @@ export interface RemoteFile {
     size: number;
     createdAt: string;
     updatedAt: string;
+    revision?: number;
 }
 
 /**
@@ -71,9 +76,12 @@ export interface FileDownloadResponse {
         hash: string;
         size: number;
         updatedAt: string;
+        revision?: number;
+        parentRevision?: number;
     };
     content?: string;
     error?: string;
+    isConflict?: boolean;
 }
 
 /**
@@ -87,8 +95,10 @@ export interface FileUploadResponse {
         path: string;
         hash: string;
         size: number;
+        revision?: number;
     };
     error?: string;
+    conflict?: ConflictInfo;
 }
 
 /**
@@ -102,6 +112,7 @@ export interface FileDeleteResponse {
         size: number;
     };
     error?: string;
+    conflict?: ConflictInfo;
 }
 
 /**
@@ -151,4 +162,31 @@ export interface APIResponse<T = any> {
     data?: T;
     error?: string;
     message?: string;
+}
+
+/**
+ * Local File Metadata for Version Control
+ */
+export interface LocalFileMetadata {
+    path: string;
+    hash: string;
+    size: number;
+    revision: number;
+    parentRevision: number;
+    lastSyncedAt: number;
+    deviceId?: string;
+}
+
+/**
+ * Conflict Info from Server
+ */
+export interface ConflictInfo {
+    currentRevision: number;
+    yourParentRevision: number;
+    conflictFile: {
+        revision: number;
+        hash: string;
+        updatedAt: string;
+        deviceId: string;
+    };
 }

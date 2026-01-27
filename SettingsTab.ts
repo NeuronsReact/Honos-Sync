@@ -155,6 +155,17 @@ export class SyncPluginSettingTab extends PluginSettingTab {
                         }
                     }));
 
+            new Setting(containerEl)
+                .setName('Use Legacy Sync')
+                .setDesc('Enable to use old sync method (no version control). Only use if you have sync issues.')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.useLegacySync)
+                    .onChange(async (value) => {
+                        this.plugin.settings.useLegacySync = value;
+                        await this.plugin.saveSettings();
+                        this.plugin.networkClient.setUseLegacySync(value);
+                    }));
+
             // ===== Sync Actions =====
             containerEl.createEl('h3', { text: '⚡ Sync Actions' });
 
