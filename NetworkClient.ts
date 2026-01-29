@@ -236,7 +236,7 @@ export class NetworkClient {
     async checkHealth(): Promise<boolean> {
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/health`,
+                url: `${this.baseUrl}/api/info`,
                 method: 'GET',
             });
             return response.status === 200;
@@ -251,7 +251,7 @@ export class NetworkClient {
     async getServerInfo(): Promise<any> {
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/`,
+                url: `${this.baseUrl}/api/info`,
                 method: 'GET',
             });
             return response.status === 200 ? response.json : null;
