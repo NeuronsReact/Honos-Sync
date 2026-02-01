@@ -17,7 +17,11 @@ export class NetworkClient {
     private deviceName: string;
 
     constructor(baseUrl: string, token: string = '', deviceName: string = '') {
-        this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
+        const normalized = baseUrl.replace(/\/$/, '');
+        // Accept either root URL or URL ending with /api/v1
+        this.baseUrl = normalized.endsWith('/api/v1')
+            ? normalized.replace(/\/api\/v1$/, '')
+            : normalized;
         this.token = token;
         this.deviceName = deviceName;
     }
@@ -43,7 +47,7 @@ export class NetworkClient {
     async listFiles(): Promise<FileListResponse> {
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/v2/files`,
+                url: `${this.baseUrl}/api/v1/vault/v2/files`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
@@ -69,7 +73,7 @@ export class NetworkClient {
             const encodedPath = encodeURIComponent(filePath);
             const query = revision ? `?revision=${revision}` : '';
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/v2/files/${encodedPath}${query}`,
+                url: `${this.baseUrl}/api/v1/vault/v2/files/${encodedPath}${query}`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
@@ -100,7 +104,7 @@ export class NetworkClient {
     ): Promise<FileUploadResponse> {
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/v2/upload`,
+                url: `${this.baseUrl}/api/v1/vault/v2/upload`,
                 method: 'POST',
                 headers: this.getAuthHeaders(),
                 body: JSON.stringify({
@@ -138,7 +142,7 @@ export class NetworkClient {
         try {
             const encodedPath = encodeURIComponent(filePath);
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/v2/files/${encodedPath}`,
+                url: `${this.baseUrl}/api/v1/vault/v2/files/${encodedPath}`,
                 method: 'DELETE',
                 headers: this.getAuthHeaders(),
                 body: JSON.stringify({
@@ -166,7 +170,7 @@ export class NetworkClient {
         // Use token-auth endpoint
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/auth/verify`,
+                url: `${this.baseUrl}/api/v1/vault/auth/verify`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
@@ -193,7 +197,7 @@ export class NetworkClient {
     }): Promise<any> {
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/v2/conflicts/auto-merge`,
+                url: `${this.baseUrl}/api/v1/vault/v2/conflicts/auto-merge`,
                 method: 'POST',
                 headers: this.getAuthHeaders(),
                 body: JSON.stringify(params),
@@ -216,7 +220,7 @@ export class NetworkClient {
     async getSyncStatus(): Promise<SyncStatusResponse> {
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/status`,
+                url: `${this.baseUrl}/api/v1/vault/status`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
