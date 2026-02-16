@@ -7,6 +7,7 @@ export class WebSocketClient {
     private reconnectTimer: NodeJS.Timeout | null = null;
     private heartbeatTimer: NodeJS.Timeout | null = null;
     private isConnecting: boolean = false;
+    private authFailed: boolean = false;
     private onFileChangeCallback: ((event: any) => void) | null = null;
     private onStatusChangeCallback: ((connected: boolean) => void) | null = null;
 
@@ -51,11 +52,15 @@ export class WebSocketClient {
                     console.log('[WS] Received:', message);
 
                     if (message.event === 'authenticated') {
+                        this.authFailed = false;
                         new Notice(`✅ Real-time sync connected`);
                     } else if (message.event === 'file_change') {
                         this.onFileChangeCallback?.(message.data);
                     } else if (message.error) {
                         console.error('[WS] Server error:', message.error);
+                        if (message.error === 'Invalid token') {
+                            this.authFailed = true;
+                        }
                         new Notice(`WS Error: ${message.error}`);
                     }
                 } catch (err) {
@@ -108,6 +113,11 @@ export class WebSocketClient {
     }
 
     private scheduleReconnect() {
+        if (this.authFailed) {
+            console.log('[WS] Not reconnecting due to authentication failure');
+            return;
+        }
+
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
         }
@@ -145,5 +155,10 @@ export class WebSocketClient {
 
     isConnected(): boolean {
         return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+    }
+
+    setToken(token: string) {
+        this.token = token;
+        this.authFailed = false;
     }
 }
